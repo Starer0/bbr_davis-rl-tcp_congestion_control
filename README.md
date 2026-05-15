@@ -139,8 +139,9 @@ sudo -E python3 src/gym/train_mahimahi.py
 | `--batch-size` | `64` | PPO minibatch 大小 |
 | `--gamma` | `0.99` | 折扣因子 |
 | `--arch` | `64,64` | 策略网络架构 (逗号分隔) |
-| `--model-dir` | `/tmp/bbr_rl_models/` | 模型保存目录 |
-| `--load` | `""` | 从已有模型继续训练 |
+| `--model-dir` | `./bbr_rl_models/` | 模型保存目录（相对于当前工作目录） |
+| `--load` | `""` | 加载指定模型继续训练 |
+| `--resume` | `0` | 自动从 model-dir 中最新的 checkpoint 续训 |
 | `--tb` | `/tmp/bbr_rl_tb/` | TensorBoard 日志目录 |
 | `--early-stop` | `1` | 启用收敛自动终止 (`0` 关闭) |
 | `--early-stop-window` | `50` | 收敛检测窗口 (episode 数) |
@@ -163,11 +164,24 @@ sudo -E python3 src/gym/train_mahimahi.py --timesteps=1000000 --iperf-dur=3 --st
 sudo -E python3 src/gym/train_mahimahi.py --early-stop=0
 ```
 
-### 4.4 从已有模型继续训练
+### 4.4 存档与续训
 
+训练过程中每 **5000 步**自动保存一次 checkpoint，文件名格式为 `bbr_target_model_{N}_steps.zip`。
+Ctrl+C 中断时也会立即保存当前步数的 checkpoint。模型文件每个约 **60 KB**，50 万步跑完约占用 **6 MB**。
+
+**中断后续训**（自动找到最新 checkpoint）:
 ```bash
-sudo -E python3 src/gym/train_mahimahi.py --load=/tmp/bbr_rl_models/bbr_target_model_50000_steps
+sudo -E python3 src/gym/train_mahimahi.py --timesteps=500000 --resume
 ```
+
+`--resume` 会扫描 `--model-dir` 下所有 `bbr_target_model_*_steps.zip` 文件，自动加载步数最大的那个，只跑剩余步数。
+
+**加载指定的模型**:
+```bash
+sudo -E python3 src/gym/train_mahimahi.py --load=./bbr_rl_models/bbr_target_model_50000_steps
+```
+
+> **注意**: 模型默认保存在 `./bbr_rl_models/`（当前工作目录下），重启不会丢失。旧的默认路径 `/tmp/` 在重启后会被清空，不建议使用。
 
 ### 4.5 用 TensorBoard 监控
 
@@ -208,7 +222,7 @@ from stable_baselines3 import PPO
 from mahimahi_env import MahimahiEnv, _write_target
 
 # 加载模型
-model = PPO.load("/tmp/bbr_rl_models/bbr_target_model_final")
+model = PPO.load("./bbr_rl_models/bbr_target_model_final")
 
 # 加载环境获取观测
 env = MahimahiEnv()

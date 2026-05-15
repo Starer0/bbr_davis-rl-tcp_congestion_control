@@ -52,7 +52,7 @@ N_STEPS        = arg_or_default("--n-steps", default=512)
 BATCH_SIZE     = arg_or_default("--batch-size", default=64)
 GAMMA          = arg_or_default("--gamma", default=0.99)
 ARCH           = arg_or_default("--arch", default="64,64")
-MODEL_DIR      = arg_or_default("--model-dir", default="/tmp/bbr_rl_models/")
+MODEL_DIR      = arg_or_default("--model-dir", default="./bbr_rl_models/")
 LOAD_MODEL     = arg_or_default("--load", default="")
 TENSORBOARD    = arg_or_default("--tb", default="/tmp/bbr_rl_tb/")
 EARLY_STOP     = arg_or_default("--early-stop", default=1)
@@ -234,7 +234,7 @@ else:
     print("\nStarting training... ({} remaining timesteps)\n".format(remaining_timesteps))
 
     progress_cb = ProgressCallback(
-        save_freq=max(10000, TIMESTEPS // 10),
+        save_freq=5000,
         model_dir=MODEL_DIR,
         step_offset=completed_steps)
     callbacks = [progress_cb]

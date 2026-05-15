@@ -22,3 +22,5 @@ __pycache__/
 
 # RL training outputs
 /tmp/
+bbr_rl_models/
+*.zip
