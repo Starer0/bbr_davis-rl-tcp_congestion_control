@@ -1,0 +1,28 @@
+# mahimahi mm-link (Downlink) [/home/huo/桌面/RL/c2tcp-master/traces/100Mbps.down] > down-t1-20-10
+# command line: 'mm-link' '/home/huo/桌面/RL/c2tcp-master/traces/100Mbps.down' '/home/huo/桌面/RL/c2tcp-master/traces/100Mbps.down' '--once' '--uplink-log=up-t1-20-10' '--downlink-log=down-t1-20-10' '--uplink-queue=droptail' '--uplink-queue-args=\"packets=100\"' '--downlink-queue=droptail' '--downlink-queue-args=\"packets=100\"' '--' 'sh' '-c' 'iperf3 -c $MAHIMAHI_BASE -p 5001 -t 10 -i 0'
+# queue: droptail [packets=100]
+# init timestamp: 1645164258177
+# base timestamp: 32
+# mahimahi config: [delay 20 ms] 
+32 + 80 44972:8576
+32 + 52 44972:8576
+32 + 80 44972:8576
+33 # 1504
+33 - 80 44972:8576 1
+33 - 52 44972:8576 1
+33 - 80 44972:8576 1
+33 # 1504
+33 # 1504
+33 # 1504
+33 # 1504
+33 # 1504
+33 # 1504
+33 # 1504
+34 # 1504
+34 # 1504
+34 # 1504
+34 # 1504
+34 # 1504
+34 # 1504
+34 # 1504
+34 # 1504

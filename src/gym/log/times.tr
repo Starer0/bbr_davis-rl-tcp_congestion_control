@@ -1,0 +1,96 @@
+0
+Average capacity: 16.66 Mbits/s
+Average throughput: 6.42 Mbits/s (38.6% utilization)
+95th percentile per-packet queueing delay: 418 ms
+average per packet delay: 123 ms
+duration: 334909568 ms
+duration: 868217088 ms
+1
+Average capacity: 16.72 Mbits/s
+Average throughput: 6.53 Mbits/s (39.1% utilization)
+95th percentile per-packet queueing delay: 388 ms
+average per packet delay: 118 ms
+duration: 337179904 ms
+duration: 862586112 ms
+2
+Average capacity: 16.75 Mbits/s
+Average throughput: 6.11 Mbits/s (36.4% utilization)
+95th percentile per-packet queueing delay: 392 ms
+average per packet delay: 113 ms
+duration: 310697216 ms
+duration: 852443136 ms
+3
+Average capacity: 16.75 Mbits/s
+Average throughput: 6.44 Mbits/s (38.5% utilization)
+95th percentile per-packet queueing delay: 436 ms
+average per packet delay: 116 ms
+duration: 327830592 ms
+duration: 852599552 ms
+4
+Average capacity: 16.72 Mbits/s
+Average throughput: 6.31 Mbits/s (37.8% utilization)
+95th percentile per-packet queueing delay: 439 ms
+average per packet delay: 120 ms
+duration: 325760640 ms
+duration: 862562048 ms
+5
+Average capacity: 16.75 Mbits/s
+Average throughput: 4.44 Mbits/s (26.5% utilization)
+95th percentile per-packet queueing delay: 305 ms
+average per packet delay: 70 ms
+duration: 225979264 ms
+duration: 852274688 ms
+pacing:3 1
+Average capacity: 16.66 Mbits/s
+Average throughput: 6.76 Mbits/s (40.6% utilization)
+95th percentile per-packet queueing delay: 408 ms
+average per packet delay: 122 ms
+duration: 353458304 ms
+duration: 870828032 ms
+pacing:4 1
+Average capacity: 16.75 Mbits/s
+Average throughput: 6.88 Mbits/s (41.1% utilization)
+95th percentile per-packet queueing delay: 471 ms
+average per packet delay: 140 ms
+duration: 352688704 ms
+duration: 858784000 ms
+pacing:5 1
+Average capacity: 16.75 Mbits/s
+Average throughput: 6.23 Mbits/s (37.2% utilization)
+95th percentile per-packet queueing delay: 444 ms
+average per packet delay: 125 ms
+duration: 317853120 ms
+duration: 855114240 ms
+pacing:13/3 1
+Average capacity: 16.96 Mbits/s
+Average throughput: 6.18 Mbits/s (36.4% utilization)
+95th percentile per-packet queueing delay: 410 ms
+average per packet delay: 122 ms
+duration: 334724480 ms
+duration: 918450688 ms
+
+4
+Average capacity: 16.75 Mbits/s
+Average throughput: 6.44 Mbits/s (38.4% utilization)
+95th percentile per-packet queueing delay: 403 ms
+average per packet delay: 119 ms
+duration: 328646112 ms
+duration: 855054080 ms
+Average capacity: 16.72 Mbits/s
+Average throughput: 6.38 Mbits/s (38.1% utilization)
+95th percentile per-packet queueing delay: 393 ms
+average per packet delay: 114 ms
+duration: 329020864 ms
+duration: 862562048 ms
+Average capacity: 16.65 Mbits/s
+Average throughput: 6.45 Mbits/s (38.7% utilization)
+95th percentile per-packet queueing delay: 455 ms
+average per packet delay: 126 ms
+duration: 335809120 ms
+duration: 867519232 ms
+Average capacity: 16.67 Mbits/s
+Average throughput: 6.85 Mbits/s (41.1% utilization)
+95th percentile per-packet queueing delay: 422 ms
+average per packet delay: 132 ms
+duration: 355782560 ms
+duration: 866219776 ms

@@ -1,0 +1,24 @@
+# Kernel build artifacts
+*.o
+*.ko
+*.mod
+*.mod.c
+*.mod.o
+modules.order
+Module.symvers
+built-in.o
+.*.cmd
+.cache.mk
+
+# Python
+__pycache__/
+*.pyc
+
+# Backup files
+*beifen*
+
+# Claude local settings
+.claude/
+
+# RL training outputs
+/tmp/

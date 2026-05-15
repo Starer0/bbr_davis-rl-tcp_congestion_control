@@ -1,0 +1,11 @@
+set terminal postscript eps font "Times-Roman, 23"
+set output 'rlbbr.eps'
+set size 4/4.,4/4.
+set key right top
+set yrange[0:100]
+set xrange[40:180]
+set xlabel offset 0,0.5 'Latency (ms)'
+set ylabel offset 2.5,0 'Throughput (Mbps)'
+set term post eps color solid enh
+
+plot "summart.tr" u 1:2 title "Capacity" with filledcurves above x1 lw 0.5
