@@ -245,15 +245,14 @@ else:
     callback = CallbackList(callbacks)
 
     try:
-        # Note: learn(total_timesteps=TIMESTEPS) because model.num_timesteps
-        # is already restored to `completed_steps` from the checkpoint.
-        # The internal loop runs while num_timesteps < TIMESTEPS.
-        model.learn(total_timesteps=TIMESTEPS, callback=callback)
+        # SB3 resets num_timesteps to 0 each learn() call by default,
+        # so we pass the remaining steps directly.
+        model.learn(total_timesteps=remaining_timesteps, callback=callback)
     except KeyboardInterrupt:
-        # model.num_timesteps reflects total steps seen (including resumed)
+        # model.num_timesteps counts from 0 within this learn() call
+        total = completed_steps + model.num_timesteps
         int_path = os.path.join(MODEL_DIR,
-                                "bbr_target_model_{}_steps".format(
-                                    model.num_timesteps))
+                                "bbr_target_model_{}_steps".format(total))
         model.save(int_path)
         print("\n[Interrupted] Saved checkpoint to {}".format(int_path))
 

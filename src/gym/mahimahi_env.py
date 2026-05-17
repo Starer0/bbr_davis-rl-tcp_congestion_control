@@ -96,19 +96,20 @@ def _read_target():
         return TARGET_DEFAULT
 
 
-def _iperf_once(uplink_trace, downlink_trace, delay_ms, duration_s, port):
+def _iperf_once(uplink_trace, downlink_trace, delay_ms, loss_pct, duration_s, port):
     """Single iperf3 client run inside mahimahi. Returns result tuple or None."""
     nonroot = os.environ.get("SUDO_USER", "nobody")
     cmd = (
         "sudo -u {user} mm-link {ut} {dt} -- "
-        "sh -c 'mm-delay {dly} iperf3 -c $MAHIMAHI_BASE -p {port} -t {dur} -J'"
+        "sh -c 'mm-delay {dly} mm-loss uplink {loss} mm-loss downlink {loss} "
+        "iperf3 -c $MAHIMAHI_BASE -p {port} -t {dur} --connect-timeout 5000 -J'"
     ).format(
         user=nonroot,
         ut=uplink_trace, dt=downlink_trace,
-        dly=int(delay_ms), port=port, dur=int(duration_s),
+        dly=int(delay_ms), loss=loss_pct / 100.0, port=port, dur=int(duration_s),
     )
 
-    timeout_s = int(duration_s) + 15
+    timeout_s = int(duration_s) + 20
     try:
         proc = subprocess.run(
             cmd, shell=True,
@@ -143,10 +144,10 @@ def _iperf_once(uplink_trace, downlink_trace, delay_ms, duration_s, port):
         return None
 
 
-def _run_iperf(uplink_trace, downlink_trace, delay_ms, duration_s, port):
+def _run_iperf(uplink_trace, downlink_trace, delay_ms, loss_pct, duration_s, port):
     """Run iperf3 with one retry on transient failure (e.g. server busy)."""
     for attempt in range(2):
-        result = _iperf_once(uplink_trace, downlink_trace, delay_ms, duration_s, port)
+        result = _iperf_once(uplink_trace, downlink_trace, delay_ms, loss_pct, duration_s, port)
         if result is not None:
             return result
         if attempt == 0:
@@ -332,7 +333,7 @@ class MahimahiEnv(gym.Env):
 
         # Run one initial iperf test to seed observation
         result = _run_iperf(self.uplink_trace, self.downlink_trace,
-                            self.delay_ms, self.iperf_duration, self.iperf_port)
+                            self.delay_ms, self.loss_pct, self.iperf_duration, self.iperf_port)
         if result is None:
             # Fallback observation if iperf failed
             obs = self._build_obs(0.0, TARGET_DEFAULT, 0, 1)
@@ -351,7 +352,7 @@ class MahimahiEnv(gym.Env):
 
         # Run iperf3 through mahimahi
         result = _run_iperf(self.uplink_trace, self.downlink_trace,
-                            self.delay_ms, self.iperf_duration, self.iperf_port)
+                            self.delay_ms, self.loss_pct, self.iperf_duration, self.iperf_port)
 
         if result is None:
             # iperf failed — return negative reward, same observation
