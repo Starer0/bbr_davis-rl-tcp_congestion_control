@@ -19,6 +19,13 @@ src/
 │   ├── stable_solve.py       # [旧] 仿真训练 (保留作参考)
 │   └── online/               # [旧] 在线训练 (PCC-Uspace, 保留作参考)
 └── __init__.py
+test_davis/                   # RL 部署实验工具
+├── run_rl_experiment.sh      # [新] 一键启动 RL 控制实验
+├── rl_controller.py          # [新] RL 控制器 (读 iperf3 JSON, 写 sysfs)
+├── mm-tcp-rl                 # [新] mm-tcp 变体 (iperf3 输出 JSON 到文件)
+├── mm-tcp                    # 标准实验脚本 (iperf3 无 JSON 输出)
+├── mm-metric                 # 实验结果分析脚本
+└── run_all.sh                # 批量实验脚本
 ```
 
 ## 与原项目的关键区别
@@ -213,41 +220,90 @@ Episode 开始
 
 每一步需要约 2+ 秒 (iperf3 测试时长)。每 episode 100 步约需 3-4 分钟。
 
-## 6. 使用训练好的模型
+## 6. 用训练好的模型做实验 (RL 在线调控)
 
-训练完成后，模型保存在 `--model-dir` 指定目录下。要使用模型进行推理:
+### 6.1 架构
 
-```python
-from stable_baselines3 import PPO
-from mahimahi_env import MahimahiEnv, _write_target
-
-# 加载模型
-model = PPO.load("./bbr_rl_models/bbr_target_model_final")
-
-# 加载环境获取观测
-env = MahimahiEnv()
-obs = env.reset()
-
-# 推理: 获取最优 c2tcp_target
-action, _ = model.predict(obs, deterministic=True)
-
-# 手动应用 target
-env._apply_delta(action)
-print("最优 c2tcp_target: {} us ({} ms)".format(
-    env.current_target, env.current_target / 1000))
+```
+run_rl_experiment.sh (wrapper, 普通用户)
+  │
+  ├─ sudo python3 rl_controller.py &     # RL 控制器 (root, 需要写 sysfs)
+  │     ├─ 加载 PPO 模型
+  │     ├─ tail -f /tmp/iperf3_rl_output.jsonl
+  │     ├─ 每秒解析 iperf3 JSON → 构建观测 → 模型推理 → 写 c2tcp_target
+  │     └─ 写 /tmp/rl_ready 信号通知 wrapper 就绪
+  │
+  └─ ./mm-tcp-rl <args>                  # 实验脚本 (普通用户, mm-delay 要求)
+        └─ mm-delay ... mm-link ... iperf3 -c ... -i 1 -J > /tmp/iperf3_rl_output.jsonl
 ```
 
-或者直接用训练好的模型写入内核参数:
+**关键设计**: RL 控制器用 sudo 跑 (需要写 `/sys/module/bbr_davis/parameters/c2tcp_target_param`)，实验脚本用普通用户跑 (mahimahi 的 mm-delay 拒绝 root)。两者通过 `/tmp/iperf3_rl_output.jsonl` 普通文件（非 fifo）通信。
 
-```python
-import numpy as np
-from stable_baselines3 import PPO
-from mahimahi_env import _write_target, TARGET_DEFAULT
+### 6.2 运行实验
 
-model = PPO.load("/tmp/bbr_rl_models/bbr_target_model_final")
+```bash
+cd test_davis
 
-# 需要构造当前观测... 简化版直接用一次推理
-# 实际应用中应持续观测网络状态并动态调整
+# 基本用法 (10 个参数, 与 mm-tcp 完全相同)
+./run_rl_experiment.sh \
+    TMobile-LTE-driving.down \   # 下行 trace 文件
+    TMobile-LTE-driving.up \     # 上行 trace 文件
+    bbr_davis \                  # 拥塞控制算法
+    50001 \                      # iperf3 端口
+    20 \                         # RTT (ms)
+    0 \                          # 丢包率 (%)
+    droptail \                   # 队列算法 (droptail/codel/pie)
+    300 \                        # 队列 buffer 大小 (packets)
+    mit \                        # trace 集
+    750                          # 实验时长 (s)
+```
+
+脚本会自动:
+1. 清理上次残留的 RL 控制器进程
+2. 刷新 sudo 时间戳 (避免后台 sudo 卡密码)
+3. 后台启动 RL 控制器 (sudo, 加载 TF 模型约 10s)
+4. 等待控制器就绪信号
+5. 启动 mm-tcp-rl 实验
+6. 实验结束后自动停止 RL 控制器
+
+### 6.3 RL 介入输出
+
+正常运行时你会看到:
+
+```
+[RL Ctrl    0] tp=3.5Mbps rtt=85us retr=0 target=100035us delta=+0.0004
+[RL Ctrl    1] tp=4.1Mbps rtt=92us retr=0 target=100012us delta=-0.0002
+[RL Ctrl    2] tp=3.8Mbps rtt=78us retr=2 target=100508us delta=+0.0050
+...
+```
+
+每行表示 RL 模型根据当前网络观测做了一次 c2tcp_target 调整。如果没有这些输出，说明 RL 未介入。
+
+### 6.4 分析结果
+
+与普通实验完全相同，使用 `mm-metric`:
+
+```bash
+./mm-metric 500 up-bbr_davis-20 1>/dev/null
+```
+
+### 6.5 故障排查
+
+**`[ ERROR] RL controller did not become ready within 30s`**
+```bash
+sudo pkill -f rl_controller.py
+sudo rm -f /tmp/rl_pid /tmp/rl_ready
+# 重新运行
+```
+
+**没有 `[RL Ctrl ...]` 输出**
+```bash
+# 确认 bbr_davis 模块已加载
+lsmod | grep bbr_davis
+# 确认 sysfs 路径存在
+cat /sys/module/bbr_davis/parameters/c2tcp_target_param
+# 确认没有残留进程
+ps aux | grep rl_controller
 ```
 
 ## 7. 常见问题

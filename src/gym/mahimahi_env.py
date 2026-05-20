@@ -19,6 +19,7 @@ import numpy as np
 import subprocess
 import json
 import os
+import re
 import tempfile
 import random
 import time
@@ -36,11 +37,11 @@ TARGET_DEFAULT = 100000   # 100 ms — starting/default value
 SYSFS_TARGET_PATH = "/sys/module/bbr_davis/parameters/c2tcp_target_param"
 
 # Observation normalisation scales (rough maxima)
-THROUGHPUT_SCALE = 1e8    # 100 Mbps
-RTT_SCALE        = 100000 # 100 ms in microseconds
-TARGET_SCALE     = 100000 # 100 ms in microseconds
+THROUGHPUT_SCALE = 2e8      # 200 Mbps — covers max training bandwidth
+RTT_SCALE        = 1000000  # 1000 ms — covers bufferbloat RTT
+TARGET_SCALE     = 100000   # 100 ms (target range stays 30-150ms)
 
-REWARD_SCALE = 0.001
+REWARD_SCALE = 1.0
 
 # Mahimahi trace directory
 TRACE_DIR = "/tmp/bbr_rl_traces"
@@ -96,30 +97,64 @@ def _read_target():
         return TARGET_DEFAULT
 
 
-def _iperf_once(uplink_trace, downlink_trace, delay_ms, loss_pct, duration_s, port):
+def _get_ss_rtt(port):
+    """Get kernel smoothed RTT in microseconds for the server connection."""
+    try:
+        out = subprocess.check_output(
+            ["ss", "-tipn", "state", "established", "sport", "= :{}".format(port)],
+            stderr=subprocess.DEVNULL, timeout=1,
+        ).decode()
+        m = re.search(r'rtt:([\d.]+)/', out)
+        if m:
+            return float(m.group(1)) * 1000.0  # ms → µs
+    except Exception:
+        pass
+    return None
+
+
+def _iperf_once(uplink_trace, downlink_trace, delay_ms, loss_pct, duration_s, port,
+               use_queue=False, queue_buf=100):
     """Single iperf3 client run inside mahimahi. Returns result tuple or None."""
     nonroot = os.environ.get("SUDO_USER", "nobody")
+    if use_queue:
+        q_opts = ("--uplink-queue=droptail --uplink-queue-args=\"packets={q}\" "
+                  "--downlink-queue=droptail --downlink-queue-args=\"packets={q}\"").format(q=queue_buf)
+    else:
+        q_opts = ""
     cmd = (
-        "sudo -u {user} mm-link {ut} {dt} -- "
+        "sudo -u {user} mm-link {q_opts} {ut} {dt} -- "
         "sh -c 'mm-delay {dly} mm-loss uplink {loss} mm-loss downlink {loss} "
         "iperf3 -c $MAHIMAHI_BASE -p {port} -t {dur} --connect-timeout 5000 -J'"
     ).format(
         user=nonroot,
+        q_opts=q_opts,
         ut=uplink_trace, dt=downlink_trace,
         dly=int(delay_ms), loss=loss_pct / 100.0, port=port, dur=int(duration_s),
     )
 
     timeout_s = int(duration_s) + 20
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             cmd, shell=True,
-            capture_output=True, text=True, timeout=timeout_s,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         )
-        if proc.returncode != 0 or not proc.stdout.strip():
+        # Sample kernel RTT from ss while iperf3 transfers
+        rtt_samples = []
+        start = time.time()
+        # Wait for TCP handshake + data transfer to begin
+        time.sleep(max(delay_ms * 2 / 1000.0, 0.5))
+        while proc.poll() is None and time.time() - start < timeout_s:
+            r = _get_ss_rtt(port)
+            if r is not None:
+                rtt_samples.append(r)
+            time.sleep(0.05)
+        stdout, stderr = proc.communicate(timeout=1)
+
+        if proc.returncode != 0 or not stdout.strip():
             print("[WARN] iperf3 failed: rc={} stdout={!r} stderr={!r}".format(
-                proc.returncode, proc.stdout[:200], proc.stderr[:200]), file=sys.stderr)
+                proc.returncode, stdout[:200], stderr[:200]), file=sys.stderr)
             return None
-        data = json.loads(proc.stdout)
+        data = json.loads(stdout)
     except subprocess.TimeoutExpired:
         print("[WARN] iperf3 timed out after {}s".format(timeout_s), file=sys.stderr)
         return None
@@ -134,20 +169,26 @@ def _iperf_once(uplink_trace, downlink_trace, delay_ms, loss_pct, duration_s, po
         throughput = data["end"]["sum_sent"]["bits_per_second"]
         retransmits = data["end"]["sum_sent"]["retransmits"]
         bytes_sent = data["end"]["sum_sent"]["bytes"]
-        stream = data["end"]["streams"][0]["sender"]
-        avg_rtt = stream.get("avg_rtt", stream.get("mean_rtt", 0))
-        if avg_rtt == 0:
-            avg_rtt = stream.get("min_rtt", 5000)
+        # Use kernel RTT when available (matches deployment), fall back to iperf3 avg_rtt
+        if rtt_samples:
+            avg_rtt = float(np.mean(rtt_samples))
+        else:
+            stream = data["end"]["streams"][0]["sender"]
+            avg_rtt = stream.get("avg_rtt", stream.get("mean_rtt", 0))
+            if avg_rtt == 0:
+                avg_rtt = stream.get("min_rtt", 5000)
         return throughput, avg_rtt, retransmits, bytes_sent
     except (KeyError, IndexError) as e:
         print("[WARN] iperf3 JSON parse error: {}".format(e), file=sys.stderr)
         return None
 
 
-def _run_iperf(uplink_trace, downlink_trace, delay_ms, loss_pct, duration_s, port):
+def _run_iperf(uplink_trace, downlink_trace, delay_ms, loss_pct, duration_s, port,
+              use_queue=False, queue_buf=100):
     """Run iperf3 with one retry on transient failure (e.g. server busy)."""
     for attempt in range(2):
-        result = _iperf_once(uplink_trace, downlink_trace, delay_ms, loss_pct, duration_s, port)
+        result = _iperf_once(uplink_trace, downlink_trace, delay_ms, loss_pct,
+                            duration_s, port, use_queue, queue_buf)
         if result is not None:
             return result
         if attempt == 0:
@@ -175,9 +216,13 @@ class MahimahiEnv(gym.Env):
         self.max_steps = steps_per_episode
 
         # Network condition ranges (per episode)
-        self.bw_range      = (10, 200)     # Mbit/s
-        self.delay_range   = (5, 150)      # ms
+        self.bw_range      = (2, 200)      # Mbit/s — low end matches real traces
+        self.delay_range   = (5, 500)      # ms — covers bufferbloat scenarios
         self.loss_range    = (0.0, 2.0)    # percent
+
+        # Queue / bufferbloat ranges (per episode, 50% probability)
+        self.queue_prob     = 0.5
+        self.queue_buf_range = (50, 500)   # packets — droptail buffer size
 
         # Current episode state
         self.current_target = TARGET_DEFAULT
@@ -188,6 +233,8 @@ class MahimahiEnv(gym.Env):
         self.loss_pct = 0.0
         self.uplink_trace = None
         self.downlink_trace = None
+        self.use_queue = False
+        self.queue_buf = 100
 
         # History buffer for observations
         self.history = []
@@ -313,6 +360,8 @@ class MahimahiEnv(gym.Env):
         self.bw_mbps   = random.uniform(*self.bw_range)
         self.delay_ms  = random.uniform(*self.delay_range)
         self.loss_pct  = random.uniform(*self.loss_range)
+        self.use_queue = random.random() < self.queue_prob
+        self.queue_buf = random.randint(*self.queue_buf_range)
 
         # Generate mahimahi traces (uplink/downlink identical for now)
         _ensure_trace_dir()
@@ -327,13 +376,16 @@ class MahimahiEnv(gym.Env):
         self.history = []
         self.steps_taken = 0
         self.episode_reward_sum = 0.0
+        self.step_failures = 0
 
-        print("[Episode] bw={:.1f}Mbps delay={:.1f}ms loss={:.2f}%".format(
-            self.bw_mbps, self.delay_ms, self.loss_pct))
+        q_str = " queue=droptail/{}pkts".format(self.queue_buf) if self.use_queue else ""
+        print("[Episode] bw={:.1f}Mbps delay={:.1f}ms loss={:.2f}%{}".format(
+            self.bw_mbps, self.delay_ms, self.loss_pct, q_str))
 
         # Run one initial iperf test to seed observation
         result = _run_iperf(self.uplink_trace, self.downlink_trace,
-                            self.delay_ms, self.loss_pct, self.iperf_duration, self.iperf_port)
+                            self.delay_ms, self.loss_pct, self.iperf_duration, self.iperf_port,
+                            self.use_queue, self.queue_buf)
         if result is None:
             # Fallback observation if iperf failed
             obs = self._build_obs(0.0, TARGET_DEFAULT, 0, 1)
@@ -352,18 +404,23 @@ class MahimahiEnv(gym.Env):
 
         # Run iperf3 through mahimahi
         result = _run_iperf(self.uplink_trace, self.downlink_trace,
-                            self.delay_ms, self.loss_pct, self.iperf_duration, self.iperf_port)
+                            self.delay_ms, self.loss_pct, self.iperf_duration, self.iperf_port,
+                            self.use_queue, self.queue_buf)
 
         if result is None:
             # iperf failed — return negative reward, same observation
             reward = -1.0
             padded = [np.zeros(self.n_features, dtype=np.float32)] * self.history_len
             obs = np.concatenate(padded)
+            self.step_failures += 1
         else:
             throughput, avg_rtt, retransmits, bytes_sent = result
-            # POWER = throughput / delay  (the quantity to maximise)
-            raw_power = throughput / max(avg_rtt, 1.0)
-            reward = raw_power * REWARD_SCALE
+            # Normalized power: divide actual power by the theoretical max
+            # for this network condition, so reward is comparable across episodes.
+            # ideal = full bw at base RTT (2 * one-way delay in µs)
+            ideal_power = (self.bw_mbps * 1e6) / max(self.delay_ms * 2000.0, 1.0)
+            actual_power = throughput / max(avg_rtt, 1.0)
+            reward = (actual_power / max(ideal_power, 1.0)) * REWARD_SCALE
             obs = self._build_obs(throughput, avg_rtt, retransmits, bytes_sent)
 
         self.steps_taken += 1
@@ -378,6 +435,9 @@ class MahimahiEnv(gym.Env):
 
         if done:
             info["episode_reward_sum"] = self.episode_reward_sum
+            ok = self.steps_taken - self.step_failures
+            print("[Episode done] {}/{} ok  sum_reward={:.1f}".format(
+                ok, self.steps_taken, self.episode_reward_sum))
 
         return obs, reward, done, info
 
