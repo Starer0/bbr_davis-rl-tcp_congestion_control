@@ -420,7 +420,7 @@ class MahimahiEnv(gym.Env):
             # ideal = full bw at base RTT (2 * one-way delay in µs)
             ideal_power = (self.bw_mbps * 1e6) / max(self.delay_ms * 2000.0, 1.0)
             actual_power = throughput / max(avg_rtt, 1.0)
-            reward = (actual_power / max(ideal_power, 1.0)) * REWARD_SCALE
+            reward = np.clip((actual_power / max(ideal_power, 1.0)) * REWARD_SCALE, 0.0, 1.0)
             obs = self._build_obs(throughput, avg_rtt, retransmits, bytes_sent)
 
         self.steps_taken += 1

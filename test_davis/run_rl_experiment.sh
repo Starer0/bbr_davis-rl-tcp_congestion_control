@@ -52,13 +52,20 @@ echo "=========================================="
 sudo pkill -f rl_controller.py 2>/dev/null || true
 sudo rm -f /tmp/rl_pid /tmp/rl_ready
 
+# Log directory
+LOG_DIR="$SCRIPT_DIR/logs"
+mkdir -p "$LOG_DIR"
+TRACE_NAME="$(basename "$1" .down)"
+
 # Start RL controller as root (needs sysfs), in background
 echo "[Wrapper] Starting RL controller (sudo, TF takes ~10s to load)..."
 sudo -E env PYTHONPATH="$GYM_DIR:$SCRIPT_DIR:$PYTHONPATH" \
     python3 "$SCRIPT_DIR/rl_controller.py" \
     --model="$MODEL" \
     --file="$DATA_FILE" \
-    --port="$4" &
+    --port="$4" \
+    --trace-name="$TRACE_NAME" \
+    --log-dir="$LOG_DIR" &
 RL_PID=$!
 
 # Wait for controller to signal it's loaded and ready

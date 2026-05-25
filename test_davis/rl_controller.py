@@ -10,6 +10,7 @@ Usage (as root, for sysfs write):
 import sys
 import os
 import re
+import time
 import subprocess
 import numpy as np
 
@@ -32,6 +33,8 @@ DATA_FILE     = arg_or_default("--file", default="/tmp/iperf3_rl_fifo")
 PORT          = arg_or_default("--port", default=50001)
 HISTORY_LEN   = arg_or_default("--history-len", default=5)
 DETERMINISTIC = arg_or_default("--deterministic", default=1)
+TRACE_NAME    = arg_or_default("--trace-name", default="experiment")
+LOG_DIR       = arg_or_default("--log-dir", default=".")
 
 # ---------------------------------------------------------------------------
 # Scales (must match mahimahi_env.py)
@@ -43,6 +46,7 @@ TARGET_SCALE     = 100000
 TARGET_MIN_US = 30000
 TARGET_MAX_US = 150000
 TARGET_DEFAULT = 100000
+WRITE_THRESHOLD = 0.01  # only write sysfs if target changes by > 1%
 
 SYSFS_TARGET_PATH = "/sys/module/bbr_davis/parameters/c2tcp_target_param"
 
@@ -149,6 +153,15 @@ def main():
     print("[RL Ctrl] Loading model: {}".format(MODEL_PATH))
     model = PPO.load(MODEL_PATH)
 
+    # Set up logging
+    os.makedirs(LOG_DIR, exist_ok=True)
+    start_ts = time.time()
+    start_time_str = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime(start_ts))
+    log_path = os.path.join(LOG_DIR, "{}_{}.csv".format(TRACE_NAME, start_time_str))
+    log_f = open(log_path, "w")
+    log_f.write("step,time_s,tp_bps,tp_mbps,rtt_us,rtt_ms,retransmits,bytes_sent,retrans_rate,old_target_us,delta,new_target_us,obs_tp,obs_rtt,obs_retrans,obs_target\n")
+    print("[RL Ctrl] Logging to {}".format(log_path))
+
     current_target = read_target()
     if current_target == 0:
         current_target = TARGET_DEFAULT
@@ -190,17 +203,41 @@ def main():
             action, _states = model.predict(obs, deterministic=bool(DETERMINISTIC))
 
             delta = float(action[0])
+            old_target = current_target
             if delta >= 0.0:
-                new_target = current_target * (1.0 + delta)
+                new_target = old_target * (1.0 + delta)
             else:
-                new_target = current_target / (1.0 - delta)
+                new_target = old_target / (1.0 - delta)
+            new_target = int(np.clip(new_target, TARGET_MIN_US, TARGET_MAX_US))
 
-            current_target = write_target(new_target)
+            # Only write sysfs if target actually changed by > 1%
+            if abs(new_target - old_target) / float(old_target) > WRITE_THRESHOLD:
+                current_target = write_target(new_target)
+            else:
+                current_target = old_target
+
+            # Log this step
+            retrans_rate = np.clip(retr / max(sent / 1500.0, 1.0), 0.0, 1.0)
+            elapsed = time.time() - start_ts
+            log_f.write("{},{:.3f},{:.0f},{:.3f},{:.1f},{:.3f},{},{},{:.6f},{:.1f},{:.6f},{:.1f},{:.6f},{:.6f},{:.6f},{:.6f}\n".format(
+                step, elapsed,
+                tp, tp / 1e6,
+                rtt, rtt / 1000.0,
+                retr, sent,
+                retrans_rate,
+                old_target, delta, current_target,
+                tp / THROUGHPUT_SCALE,
+                rtt / RTT_SCALE,
+                retrans_rate,
+                old_target / TARGET_SCALE))
+            log_f.flush()
+
             step += 1
 
     # iperf3 closed its end of the fifo — experiment is done
     os.remove(DATA_FILE)
-    print("[RL Ctrl] Done — {} steps".format(step))
+    log_f.close()
+    print("[RL Ctrl] Done — {} steps, log saved to {}".format(step, log_path))
 
 if __name__ == "__main__":
     main()
