@@ -42,6 +42,7 @@ RTT_SCALE        = 1000000  # 1000 ms — covers bufferbloat RTT
 TARGET_SCALE     = 100000   # 100 ms (target range stays 30-150ms)
 
 REWARD_SCALE = 1.0
+BASELINE_RUNS = 3  # iperf tests averaged for baseline power/excess
 
 # Mahimahi trace directory
 TRACE_DIR = "/tmp/bbr_rl_traces"
@@ -200,7 +201,9 @@ class MahimahiEnv(gym.Env):
     """Gym environment that uses mahimahi + iperf3 to evaluate BBR performance.
 
     Action: delta multiplier on c2tcp_target (1-dim continuous, [-1, 1]).
-    Reward: power = throughput / avg_delay  (maximising throughput, minimising delay).
+    Reward: power_reward - PID_penalty_on_queueing_delay (clamped to [-1, 1]).
+      - power_reward = actual_power / ideal_power (normalized, in [0, 1])
+      - PID penalty = Kp*P + Ki*I + Kd*D, where excess = max(0, avg_rtt - min_rtt)
     """
 
     def __init__(self,
@@ -224,6 +227,11 @@ class MahimahiEnv(gym.Env):
         self.queue_prob     = 0.5
         self.queue_buf_range = (50, 500)   # packets — droptail buffer size
 
+        # PID penalty gains for queueing delay (excess RTT beyond min_rtt)
+        self.pid_Kp = 0.1   # proportional: current queue
+        self.pid_Ki = 0.02  # integral: persistent queue buildup
+        self.pid_Kd = 0.03  # derivative: queue growth rate
+
         # Current episode state
         self.current_target = TARGET_DEFAULT
         self.steps_taken = 0
@@ -239,6 +247,10 @@ class MahimahiEnv(gym.Env):
         # History buffer for observations
         self.history = []
         self.n_features = 4  # throughput, avg_rtt, retransmit_rate, target
+
+        # PID state (reset per episode)
+        self._pid_integral = 0.0    # sum of normalized excess
+        self._prev_excess = None    # µs, None until first measurement
 
         # ------------------------------------------------------------------
         # Gym spaces
@@ -372,8 +384,10 @@ class MahimahiEnv(gym.Env):
         self.current_target = float(TARGET_DEFAULT)
         _write_target(self.current_target)
 
-        # Clear history
+        # Clear history and PID state
         self.history = []
+        self._pid_integral = 0.0
+        self._prev_excess = None
         self.steps_taken = 0
         self.episode_reward_sum = 0.0
         self.step_failures = 0
@@ -382,16 +396,30 @@ class MahimahiEnv(gym.Env):
         print("[Episode] bw={:.1f}Mbps delay={:.1f}ms loss={:.2f}%{}".format(
             self.bw_mbps, self.delay_ms, self.loss_pct, q_str))
 
-        # Run one initial iperf test to seed observation
-        result = _run_iperf(self.uplink_trace, self.downlink_trace,
-                            self.delay_ms, self.loss_pct, self.iperf_duration, self.iperf_port,
-                            self.use_queue, self.queue_buf)
-        if result is None:
-            # Fallback observation if iperf failed
-            obs = self._build_obs(0.0, TARGET_DEFAULT, 0, 1)
+        # Run baseline iperf tests (averaged) to seed observation and set baseline
+        baseline_powers = []
+        baseline_excesses = []
+        min_rtt = self.delay_ms * 2000.0
+        obs = None
+
+        for _ in range(BASELINE_RUNS):
+            self._restart_server()
+            result = _run_iperf(self.uplink_trace, self.downlink_trace,
+                                self.delay_ms, self.loss_pct, self.iperf_duration,
+                                self.iperf_port, self.use_queue, self.queue_buf)
+            if result is not None:
+                tp, rtt, retr, sent = result
+                baseline_powers.append(tp / max(rtt, 1.0))
+                baseline_excesses.append(max(0.0, rtt - min_rtt))
+                obs = self._build_obs(tp, rtt, retr, sent)
+
+        if baseline_powers:
+            self.baseline_power = sum(baseline_powers) / len(baseline_powers)
+            self.baseline_excess = sum(baseline_excesses) / len(baseline_excesses)
         else:
-            tp, rtt, retr, sent = result
-            obs = self._build_obs(tp, rtt, retr, sent)
+            self.baseline_power = None
+            self.baseline_excess = None
+            obs = self._build_obs(0.0, TARGET_DEFAULT, 0, 1)
 
         return obs
 
@@ -415,12 +443,33 @@ class MahimahiEnv(gym.Env):
             self.step_failures += 1
         else:
             throughput, avg_rtt, retransmits, bytes_sent = result
-            # Normalized power: divide actual power by the theoretical max
-            # for this network condition, so reward is comparable across episodes.
-            # ideal = full bw at base RTT (2 * one-way delay in µs)
-            ideal_power = (self.bw_mbps * 1e6) / max(self.delay_ms * 2000.0, 1.0)
+            # Power reward (normalized by baseline: default-target power at episode start)
             actual_power = throughput / max(avg_rtt, 1.0)
-            reward = np.clip((actual_power / max(ideal_power, 1.0)) * REWARD_SCALE, 0.0, 1.0)
+            if self.baseline_power is not None and self.baseline_power > 0:
+                power_reward = (actual_power / self.baseline_power) * REWARD_SCALE
+            else:
+                ideal_power = (self.bw_mbps * 1e6) / max(self.delay_ms * 2000.0, 1.0)
+                power_reward = (actual_power / max(ideal_power, 1.0)) * REWARD_SCALE
+
+            # PID penalty on queueing delay (excess RTT beyond baseline)
+            min_rtt = self.delay_ms * 2000.0  # 2 × one-way delay, µs
+            excess = max(0.0, avg_rtt - min_rtt)
+            if self.baseline_excess is not None:
+                excess = max(0.0, excess - self.baseline_excess)
+            excess_norm = excess / 100000.0   # 100 ms queue = 1.0
+
+            self._pid_integral += excess_norm
+
+            P = excess_norm
+            I = self._pid_integral / float(self.steps_taken + 1)
+            D = 0.0
+            if self._prev_excess is not None:
+                D = (excess - self._prev_excess) / 100000.0
+            self._prev_excess = excess
+
+            pid_penalty = self.pid_Kp * P + self.pid_Ki * I + self.pid_Kd * D
+
+            reward = power_reward - pid_penalty
             obs = self._build_obs(throughput, avg_rtt, retransmits, bytes_sent)
 
         self.steps_taken += 1

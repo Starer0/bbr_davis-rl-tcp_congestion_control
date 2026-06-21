@@ -44,7 +44,7 @@ from common.simple_arg_parse import arg_or_default
 # ---------------------------------------------------------------------------
 TIMESTEPS      = arg_or_default("--timesteps", default=500000)
 HISTORY_LEN    = arg_or_default("--history-len", default=5)
-IPERF_DURATION = arg_or_default("--iperf-dur", default=2)
+IPERF_DURATION = arg_or_default("--iperf-dur", default=10)
 IPERF_PORT     = arg_or_default("--iperf-port", default=5201)
 STEPS_PER_EP   = arg_or_default("--steps-per-ep", default=100)
 LEARNING_RATE  = arg_or_default("--lr", default=3e-4)
@@ -220,6 +220,9 @@ else:
         batch_size=BATCH_SIZE,
         gamma=GAMMA,
         policy_kwargs=policy_kwargs,
+        ent_coef=0.05,
+        n_epochs=5,
+        gae_lambda=0.9,
         tensorboard_log=TENSORBOARD if os.path.exists(os.path.dirname(TENSORBOARD)) else None,
         verbose=1,
     )

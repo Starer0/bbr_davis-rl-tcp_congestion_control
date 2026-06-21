@@ -138,7 +138,7 @@ sudo -E python3 src/gym/train_mahimahi.py
 |------|--------|------|
 | `--timesteps` | `500000` | 总训练步数 |
 | `--history-len` | `5` | 观测历史长度 |
-| `--iperf-dur` | `2` | 每次 iperf3 测试的秒数 |
+| `--iperf-dur` | `10` | 每次 iperf3 测试的秒数 |
 | `--iperf-port` | `5201` | iperf3 服务端口 |
 | `--steps-per-ep` | `100` | 每 episode 的步数 |
 | `--lr` | `3e-4` | PPO 学习率 |
@@ -204,21 +204,25 @@ tensorboard --logdir /tmp/bbr_rl_tb/ --bind_all
 ```
 Episode 开始
   │
-  ├─ 随机生成网络条件 (带宽 10-200 Mbps, 时延 5-150 ms, 丢包 0-2%)
+  ├─ 随机生成网络条件 (带宽 2-200 Mbps, 时延 5-500 ms, 丢包 0-2%)
   ├─ 生成 mahimahi trace 文件
-  ├─ 重置 c2tcp_target = 100000 us (100 ms)
+  ├─ 重置 c2tcp_target = 100000 us (默认值)
+  ├─ 跑 3 次 baseline iperf3 测试 (target=100ms 不动)
+  │     └─ 计算 baseline_power = mean(throughput / rtt)
+  │     └─ 计算 baseline_excess = mean(max(0, rtt - min_rtt))
   │
   └─ 循环 100 步 (默认):
        ├─ Agent 输出 action: delta on c2tcp_target
        ├─ 写入 /sys/module/bbr_davis/parameters/c2tcp_target_param
        ├─ 重启 iperf3 server (避免 server busy)
-       ├─ 运行: mm-link trace trace -- mm-delay <N> -- iperf3 -c ... -t 2 -J
+       ├─ 运行: mm-link trace trace -- mm-delay <N> -- iperf3 -c ... -t 10 -J
        ├─ 解析 iperf3 JSON 输出 (吞吐量, 时延, 重传数)
-       ├─ 计算 reward = (throughput / avg_rtt) * 0.001
+       ├─ 计算 reward = actual_power / baseline_power - PID_penalty
+       │     (PID penalty 惩罚超出 baseline 的排队延迟)
        └─ 返回 observation, reward → Agent 学习
 ```
 
-每一步需要约 2+ 秒 (iperf3 测试时长)。每 episode 100 步约需 3-4 分钟。
+每一步需要约 10+ 秒 (iperf3 测试时长)。每 episode 100 步约需 15-20 分钟。
 
 ## 6. 用训练好的模型做实验 (RL 在线调控)
 
@@ -349,7 +353,7 @@ sudo -E python3 -m pip install stable-baselines3 gym numpy torch
 
 ### 7.6 训练很慢
 
-- 默认 `--iperf-dur=2` (每次 iperf 测试 2 秒)，减少到 1 秒可加速但结果噪声较大
+- 默认 `--iperf-dur=10` (每次 iperf 测试 10 秒)，减少到 2 秒可加速但结果噪声较大
 - 减少 `--steps-per-ep` 可加快 episode 循环
 - 使用较小网络 (`--arch=32,16`) 可加速策略推理
 
@@ -357,8 +361,10 @@ sudo -E python3 -m pip install stable-baselines3 gym numpy torch
 
 ## 8. 开发说明
 
-- **动作**: `delta ∈ [-1, 1]`，应用于 `c2tcp_target = target * (1+delta)` 或 `target / (1-delta)`
+- **动作**: `delta ∈ [-1, 1]`，`delta >= 0` 时 `target = target * (1+delta)`，`delta < 0` 时 `target = target / (1-delta)`
 - **观测**: 4 维特征 × `history_len` = 吞吐量、RTT、重传率、当前 target
-- **奖励**: `power = throughput_bps / avg_rtt_us * 0.001`
+- **奖励**: `reward = actual_power / baseline_power - PID_penalty`
+  - `baseline_power`: 每个 episode 开始时用默认 target (100ms) 跑 3 次 iperf3 的 `throughput/rtt` 均值
+  - `PID_penalty`: 对超出 baseline 的排队延迟施加 Kp/Ki/Kd 惩罚，防 agent 刷队列
 - **c2tcp_target 范围**: [30000, 150000] us ([30ms, 150ms])
 - **内核模块**: c2tcp_tuner 仍会基于 delay vs target 调整 alpha，但不再自动探索 target 值
